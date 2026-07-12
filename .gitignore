@@ -1,0 +1,13 @@
+# 不传视频/临时/系统文件
+input/*
+output/*
+.work/
+.work_folders/
+!input/.gitkeep
+!output/.gitkeep
+*.mp4
+*.mov
+*.mp3
+*.wav
+.DS_Store
+__pycache__/
