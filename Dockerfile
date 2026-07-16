@@ -17,8 +17,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 构建时预下载 whisper 模型，避免每次冷启动重新下载几百 MB。
-# 部署默认用 base：内存约 500MB、速度快，适合免费小机器(2核4G)；本地可用 small。
-ARG WHISPER_MODEL=base
+# 用 small：中文识别明显比 base 准，2核4G + 线程限制下也稳(峰值约 1.6GB)。
+ARG WHISPER_MODEL=small
 ENV WHISPER_MODEL=${WHISPER_MODEL}
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
 
