@@ -16,3 +16,8 @@ __pycache__/
 .venv/
 .venv_test/
 data/
+
+# 含密钥的本地部署文件（绝不提交）
+.opendeploy/asr-env.json
+.opendeploy/*secret*
+.opendeploy/*credential*
