@@ -17,13 +17,14 @@
 
 import os
 import queue
+import re
 import shutil
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -36,8 +37,12 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).resolve().parent.paren
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
 WORK_DIR = DATA_DIR / "work"
-for d in (UPLOAD_DIR, OUTPUT_DIR, WORK_DIR):
+CHUNK_DIR = DATA_DIR / "chunks"   # 分片上传的临时分片
+for d in (UPLOAD_DIR, OUTPUT_DIR, WORK_DIR, CHUNK_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+# 分片上传的 id 只允许安全字符，防目录穿越
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "500"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
@@ -62,6 +67,28 @@ def _set(job_id, **kw):
     with JOBS_LOCK:
         if job_id in JOBS:
             JOBS[job_id].update(kw)
+
+
+def _create_job(src_path, filename):
+    """把一个已落盘的视频文件登记成任务并入队，返回 job_id。"""
+    global _SUBMIT_SEQ
+    job_id = Path(src_path).stem
+    with JOBS_LOCK:
+        _SUBMIT_SEQ += 1
+        JOBS[job_id] = {
+            "status": "queued",
+            "stage": "排队中",
+            "pct": 0,
+            "filename": filename,
+            "src_path": str(src_path),
+            "out_path": None,
+            "out_name": None,
+            "error": None,
+            "created": _now(),
+            "submit_seq": _SUBMIT_SEQ,
+        }
+    WORK_QUEUE.put(job_id)
+    return job_id
 
 
 def _queue_position(job_id):
@@ -123,6 +150,10 @@ def cleanup_loop():
                 for f in folder.iterdir():
                     if f.is_file() and f.stat().st_mtime < cutoff:
                         f.unlink(missing_ok=True)
+            # 清残留的分片目录（上传中断/未完成的）
+            for d in CHUNK_DIR.iterdir():
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
             # 清内存里的旧任务记录
             with JOBS_LOCK:
                 stale = [jid for jid, j in JOBS.items() if j["created"] < cutoff]
@@ -180,21 +211,75 @@ async def upload(file: UploadFile = File(...)):
         dst.unlink(missing_ok=True)
         raise HTTPException(400, "空文件。")
 
-    with JOBS_LOCK:
-        _SUBMIT_SEQ += 1
-        JOBS[job_id] = {
-            "status": "queued",
-            "stage": "排队中",
-            "pct": 0,
-            "filename": file.filename,
-            "src_path": str(dst),
-            "out_path": None,
-            "out_name": None,
-            "error": None,
-            "created": _now(),
-            "submit_seq": _SUBMIT_SEQ,
-        }
-    WORK_QUEUE.put(job_id)
+    _create_job(dst, file.filename)
+    return {"job_id": job_id, "position": _queue_position(job_id)}
+
+
+@app.post("/api/upload/chunk")
+async def upload_chunk(
+    upload_id: str = Form(...),
+    index: int = Form(...),
+    total: int = Form(...),
+    filename: str = Form(...),
+    chunk: UploadFile = File(...),
+):
+    """接收一个分片。前端把大文件切成多个 <100MB 的分片逐个传上来，绕过 Cloudflare 的单请求上限。"""
+    if not _ID_RE.match(upload_id):
+        raise HTTPException(400, "非法的上传 id")
+    if index < 0 or total <= 0 or index >= total or total > 100000:
+        raise HTTPException(400, "非法的分片序号")
+    ext = Path(filename or "").suffix.lower()
+    if ext not in VIDEO_EXTS:
+        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}。")
+
+    d = CHUNK_DIR / upload_id
+    d.mkdir(parents=True, exist_ok=True)
+    part = d / f"{index:06d}.part"
+    with open(part, "wb") as out:
+        while True:
+            b = await chunk.read(1024 * 1024)
+            if not b:
+                break
+            out.write(b)
+    return {"ok": True, "index": index}
+
+
+@app.post("/api/upload/complete")
+async def upload_complete(
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    total: int = Form(...),
+):
+    """所有分片传完后调用：按序拼成完整文件、校验大小、登记任务。"""
+    if not _ID_RE.match(upload_id):
+        raise HTTPException(400, "非法的上传 id")
+    ext = Path(filename or "").suffix.lower()
+    if ext not in VIDEO_EXTS:
+        raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}。")
+
+    d = CHUNK_DIR / upload_id
+    parts = sorted(d.glob("*.part")) if d.exists() else []
+    if not parts or len(parts) != total:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(400, f"分片不完整（{len(parts)}/{total}），请重新上传。")
+
+    total_size = sum(p.stat().st_size for p in parts)
+    if total_size > MAX_UPLOAD_BYTES:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(413, f"文件太大，最大 {MAX_UPLOAD_MB}MB。")
+    if total_size == 0:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(400, "空文件。")
+
+    job_id = uuid.uuid4().hex[:12]
+    dst = UPLOAD_DIR / f"{job_id}{ext}"
+    with open(dst, "wb") as out:
+        for p in parts:
+            with open(p, "rb") as pf:
+                shutil.copyfileobj(pf, out, 1024 * 1024)
+    shutil.rmtree(d, ignore_errors=True)
+
+    _create_job(dst, filename)
     return {"job_id": job_id, "position": _queue_position(job_id)}
 
 
