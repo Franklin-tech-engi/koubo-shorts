@@ -32,6 +32,14 @@ DEFAULT_CONFIG = {
     # 给 Web 进程留核响应健康探针，避免 CPU 打满被平台重启。用环境变量 WHISPER_CPU_THREADS 覆盖。
     "cpu_threads": int(os.environ.get("WHISPER_CPU_THREADS", "0") or "0"),
 
+    # === 转录后端 ===
+    # 配了 TRANSCRIBE_API_BASE + TRANSCRIBE_API_KEY 就走云端 API（OpenAI 兼容，如 gptnb
+    # 的 whisper-large-v3-turbo）：中文更准，且不占本地内存，小机器也不会因加载模型而崩。
+    # 没配则退回上面的本地 faster-whisper。
+    "transcribe_api_base": os.environ.get("TRANSCRIBE_API_BASE", ""),
+    "transcribe_api_key": os.environ.get("TRANSCRIBE_API_KEY", ""),
+    "transcribe_api_model": os.environ.get("TRANSCRIBE_API_MODEL", "whisper-large-v3-turbo"),
+
     # === ffmpeg 资源控制（部署到小机器的关键）===
     # ffmpeg 默认吃满所有核 + medium 预设编码很重，真实 1080p 素材会把 2 核小机器
     # 的 CPU 打满、健康探针超时导致 pod 被杀。下面三项在 Dockerfile 里收紧。
@@ -62,8 +70,8 @@ DEFAULT_CONFIG = {
     "font_size": 15,
     "subtitle_margin_v": 45,
 
-    # 每行字幕最多多少字
-    "max_chars_per_line": 16,
+    # 每行字幕最多多少字（12 字在 1080 宽下不会贴边）
+    "max_chars_per_line": 12,
     "max_seconds_per_line": 4.0,
 
     # 输出文件名后缀
@@ -116,8 +124,59 @@ def get_duration(src):
     return float(proc.stdout.strip())
 
 
+def _transcribe_via_api(src, cfg):
+    """走云端 OpenAI 兼容转录 API（whisper-large-v3-turbo），返回带时间戳的词列表。
+    先抽成 16k 单声道 mp3（小、快，规避云端 25MB 文件上限），再上传识别。"""
+    import tempfile
+    import requests
+
+    fd, audio = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    try:
+        run(["ffmpeg", "-y", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
+             "-b:a", "64k", audio])
+        base = cfg["transcribe_api_base"].rstrip("/")
+        data = {
+            "model": cfg["transcribe_api_model"],
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "word",
+        }
+        if cfg.get("language"):
+            data["language"] = cfg["language"]
+        with open(audio, "rb") as f:
+            resp = requests.post(
+                f"{base}/audio/transcriptions",
+                headers={"Authorization": "Bearer " + cfg["transcribe_api_key"]},
+                data=data,
+                files={"file": (os.path.basename(audio), f, "audio/mpeg")},
+                timeout=300,
+            )
+        resp.raise_for_status()
+        js = resp.json()
+        words = []
+        for w in js.get("words", []) or []:
+            txt = (w.get("word") or "").strip()
+            if txt and w.get("start") is not None and w.get("end") is not None:
+                words.append((float(w["start"]), float(w["end"]), w["word"]))
+        if not words:  # 没词级时间戳就退回按句
+            for seg in js.get("segments", []) or []:
+                t = (seg.get("text") or "").strip()
+                if t and seg.get("start") is not None and seg.get("end") is not None:
+                    words.append((float(seg["start"]), float(seg["end"]), t))
+        return words
+    finally:
+        try:
+            os.unlink(audio)
+        except Exception:
+            pass
+
+
 def step_transcribe_words(src, cfg):
-    """用 faster-whisper 识别原片，返回带时间戳的词列表 [(start,end,word), ...]。"""
+    """识别原片，返回带时间戳的词列表 [(start,end,word), ...]。
+    配了云端转录 API 就走 API（更准、不占内存），否则用本地 faster-whisper。"""
+    if cfg.get("transcribe_api_base") and cfg.get("transcribe_api_key"):
+        return _transcribe_via_api(src, cfg)
+
     from faster_whisper import WhisperModel
 
     # cpu_threads：限制 ctranslate2 用几个线程。部署到小机器(如 2 核)时留 1 核给
