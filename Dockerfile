@@ -33,7 +33,10 @@ ENV SUBTITLE_FONT="Noto Sans CJK SC" \
     DATA_DIR=/data \
     PORT=8000 \
     WHISPER_CPU_THREADS=1 \
-    OMP_NUM_THREADS=1
+    OMP_NUM_THREADS=1 \
+    FFMPEG_THREADS=1 \
+    X264_PRESET=veryfast \
+    GBLUR_SIGMA=12
 EXPOSE 8000
 
 # /data 挂持久化卷（存上传/成片/临时文件）

@@ -32,6 +32,13 @@ DEFAULT_CONFIG = {
     # 给 Web 进程留核响应健康探针，避免 CPU 打满被平台重启。用环境变量 WHISPER_CPU_THREADS 覆盖。
     "cpu_threads": int(os.environ.get("WHISPER_CPU_THREADS", "0") or "0"),
 
+    # === ffmpeg 资源控制（部署到小机器的关键）===
+    # ffmpeg 默认吃满所有核 + medium 预设编码很重，真实 1080p 素材会把 2 核小机器
+    # 的 CPU 打满、健康探针超时导致 pod 被杀。下面三项在 Dockerfile 里收紧。
+    "ffmpeg_threads": int(os.environ.get("FFMPEG_THREADS", "0") or "0"),  # 0=不限；服务器设 1
+    "x264_preset": os.environ.get("X264_PRESET", "medium"),               # 服务器用 veryfast 更省
+    "gblur_sigma": os.environ.get("GBLUR_SIGMA", "20"),                   # 模糊背景开销；服务器降到 12
+
     # 竖屏画面处理方式：
     #   "blur_pad" —— 画面完整居中，上下用模糊背景填充（不会裁掉人，推荐）
     #   "crop"     —— 居中裁剪成竖屏（画面更满，但可能裁掉两边）
@@ -70,6 +77,15 @@ def make_config(overrides=None):
     if overrides:
         cfg.update(overrides)
     return cfg
+
+
+def _thread_args(cfg):
+    """返回限制 ffmpeg 线程的参数（放在 ffmpeg 之后、输入之前）。0 表示不限。"""
+    n = int(cfg.get("ffmpeg_threads", 0) or 0)
+    if n > 0:
+        return ["-threads", str(n), "-filter_threads", str(n),
+                "-filter_complex_threads", str(n)]
+    return []
 
 
 def run(cmd, **kw):
@@ -163,7 +179,7 @@ def build_keep_from_words(words, duration, cfg):
     return [(s, e) for s, e in keep if e - s > 0.05]
 
 
-def step_cut(src, keep, dst):
+def step_cut(src, keep, dst, cfg):
     """按保留片段剪辑（音画同步）。"""
     total = get_duration(src)
     if len(keep) == 1 and keep[0][0] <= 0.01 and keep[0][1] >= total - 0.01:
@@ -173,7 +189,7 @@ def step_cut(src, keep, dst):
     vf = f"select='{expr}',setpts=N/FRAME_RATE/TB"
     af = f"aselect='{expr}',asetpts=N/SR/TB"
     cmd = [
-        "ffmpeg", "-y", "-i", str(src),
+        "ffmpeg", "-y", *_thread_args(cfg), "-i", str(src),
         "-vf", vf, "-af", af,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-b:a", "160k",
@@ -240,10 +256,11 @@ def build_video_filter(cfg):
         vf = (f"{beauty}scale={W}:{H}:force_original_aspect_ratio=increase,"
               f"crop={W}:{H}[vid]")
     else:  # blur_pad
+        sigma = cfg.get("gblur_sigma", "20")
         vf = (
             f"[0:v]split=2[bg][fg];"
             f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},gblur=sigma=20[bgb];"
+            f"crop={W}:{H},gblur=sigma={sigma}[bgb];"
             f"[fg]{beauty}scale={W}:{H}:force_original_aspect_ratio=decrease[fgs];"
             f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2[vid]"
         )
@@ -268,10 +285,10 @@ def step_reframe_and_burn(src, srt_name, dst, workdir, cfg):
         fc = f"{prefix}{base};[vid]subtitles={srt_name}:force_style='{style}'[out]"
 
     cmd = [
-        "ffmpeg", "-y", "-i", str(Path(src).resolve()),
+        "ffmpeg", "-y", *_thread_args(cfg), "-i", str(Path(src).resolve()),
         "-filter_complex", fc,
         "-map", "[out]", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-c:v", "libx264", "-preset", cfg.get("x264_preset", "medium"), "-crf", "20",
         "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart",
         str(Path(dst).resolve()),
@@ -319,7 +336,7 @@ def process_video(src_path, out_dir, work_dir, config=None, progress=None):
         cut_total = duration - sum(e - s for s, e in keep)
         _noop(f"  [2/3] 剪掉不说话空档 {cut_total:.1f} 秒（共 {len(keep)} 段说话）...")
         progress("剪掉空档", 45)
-        step_cut(src_path, keep, trimmed)
+        step_cut(src_path, keep, trimmed, cfg)
         lines = words_to_lines(words, keep, cfg)
     else:
         _noop("  [2/3] 没识别到人声，画面原样保留 ...")

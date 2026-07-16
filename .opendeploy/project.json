@@ -3,9 +3,9 @@
   "project_id": "5acc72bb-08a5-43a5-87b3-ff02d8ff0a56",
   "version": 1,
   "root": "/Users/franklin/koubo-shorts",
-  "updated_at": "2026-07-16T16:47:03.527Z",
+  "updated_at": "2026-07-16T17:01:22.600Z",
   "service": "b73996df-ee3c-44ea-8f1f-16ed289f1957",
   "service_id": "b73996df-ee3c-44ea-8f1f-16ed289f1957",
-  "deployment_id": "ac8c81c2-4874-493a-a410-28b971013d3d",
+  "deployment_id": "aed94078-d937-47d2-b73e-cab4d2893d5c",
   "live_url": "https://b73996df.opendeploy.site"
 }
