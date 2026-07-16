@@ -16,8 +16,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 构建时预下载 whisper 模型，避免每次冷启动重新下载几百 MB
-ARG WHISPER_MODEL=small
+# 构建时预下载 whisper 模型，避免每次冷启动重新下载几百 MB。
+# 部署默认用 base：内存约 500MB、速度快，适合免费小机器(2核4G)；本地可用 small。
+ARG WHISPER_MODEL=base
 ENV WHISPER_MODEL=${WHISPER_MODEL}
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8')"
 
@@ -26,9 +27,13 @@ COPY pipeline.py .
 COPY server ./server
 
 # 运行时配置
+# WHISPER_CPU_THREADS=1 + OMP_NUM_THREADS=1：在 2 核机器上只用 1 核跑识别，
+# 留 1 核给 Web 进程响应健康探针，避免 CPU 打满导致 pod 被平台重启。
 ENV SUBTITLE_FONT="Noto Sans CJK SC" \
     DATA_DIR=/data \
-    PORT=8000
+    PORT=8000 \
+    WHISPER_CPU_THREADS=1 \
+    OMP_NUM_THREADS=1
 EXPOSE 8000
 
 # /data 挂持久化卷（存上传/成片/临时文件）

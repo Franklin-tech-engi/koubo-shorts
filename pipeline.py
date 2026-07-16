@@ -24,8 +24,13 @@ DEFAULT_CONFIG = {
     "language": "zh",
 
     # 识别模型大小：tiny / base / small / medium / large-v3
-    # 可用环境变量 WHISPER_MODEL 覆盖（服务器算力有限时可用 base 更快）
+    # 可用环境变量 WHISPER_MODEL 覆盖（服务器算力有限时用 base 更省更快；本地追求
+    # 更高质量可设 small/medium）。默认 small 适合本地；部署镜像在 Dockerfile 里设为 base。
     "whisper_model": os.environ.get("WHISPER_MODEL", "small"),
+
+    # ctranslate2 CPU 线程数：0 = 库默认（吃满所有核）。部署到 2 核小机器时设 1，
+    # 给 Web 进程留核响应健康探针，避免 CPU 打满被平台重启。用环境变量 WHISPER_CPU_THREADS 覆盖。
+    "cpu_threads": int(os.environ.get("WHISPER_CPU_THREADS", "0") or "0"),
 
     # 竖屏画面处理方式：
     #   "blur_pad" —— 画面完整居中，上下用模糊背景填充（不会裁掉人，推荐）
@@ -99,7 +104,16 @@ def step_transcribe_words(src, cfg):
     """用 faster-whisper 识别原片，返回带时间戳的词列表 [(start,end,word), ...]。"""
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(cfg["whisper_model"], device="cpu", compute_type="int8")
+    # cpu_threads：限制 ctranslate2 用几个线程。部署到小机器(如 2 核)时留 1 核给
+    # Web 进程响应健康探针，避免 CPU 打满导致 pod 被平台判定不健康而重启。0 = 库默认。
+    cpu_threads = int(cfg.get("cpu_threads", 0) or 0)
+    model = WhisperModel(
+        cfg["whisper_model"],
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=cpu_threads,
+        num_workers=1,
+    )
     lang = cfg["language"] or None
     segments, _info = model.transcribe(
         str(src),

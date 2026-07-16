@@ -1,0 +1,207 @@
+{
+  "status": "ready",
+  "confidence": 0.78,
+  "source": "/Users/franklin/koubo-shorts",
+  "generated_at": "2026-07-16T16:42:11.190Z",
+  "analysis": {
+    "project_name": "koubo-shorts",
+    "language": "python",
+    "package_manager": "",
+    "framework": "fastapi",
+    "services": [
+      {
+        "name": "koubo-shorts",
+        "source_path": ".",
+        "language": "python",
+        "framework": "fastapi",
+        "package_manager": "npm",
+        "build_command": "",
+        "start_command": "",
+        "dockerfile": true,
+        "dockerfile_path": "Dockerfile",
+        "docker_exposed_ports": [
+          8000
+        ],
+        "ignored_ports": [],
+        "unsupported_protocols": [],
+        "port": 8000,
+        "port_evidence": "Dockerfile EXPOSE 8000; selected 8000 as HTTP listener",
+        "persistent_paths": [
+          "/data"
+        ],
+        "dependencies": [],
+        "runtime_vars": [
+          "DATA_DIR",
+          "MAX_UPLOAD_MB",
+          "RETAIN_HOURS",
+          "SUBTITLE_FONT",
+          "WHISPER_MODEL"
+        ],
+        "build_time_vars": [],
+        "late_bound_url_keys": []
+      }
+    ],
+    "warnings": []
+  },
+  "context": {
+    "project_id": null,
+    "service_id": null,
+    "deployment_id": null,
+    "source": "new_project",
+    "reason": "No saved OpenDeploy context found."
+  },
+  "complexity": {
+    "level": 6,
+    "class": "storage_decision_required",
+    "reason": "App declares runtime file paths; choose object-storage/media env or local-file behavior before deploy."
+  },
+  "services": [
+    {
+      "name": "koubo-shorts",
+      "source_path": ".",
+      "language": "python",
+      "framework": "fastapi",
+      "package_manager": "npm",
+      "build_command": "",
+      "start_command": "",
+      "dockerfile": true,
+      "dockerfile_path": "Dockerfile",
+      "docker_exposed_ports": [
+        8000
+      ],
+      "ignored_ports": [],
+      "unsupported_protocols": [],
+      "port": 8000,
+      "port_evidence": "Dockerfile EXPOSE 8000; selected 8000 as HTTP listener",
+      "persistent_paths": [
+        "/data"
+      ],
+      "dependencies": [],
+      "runtime_vars": [
+        "DATA_DIR",
+        "MAX_UPLOAD_MB",
+        "RETAIN_HOURS",
+        "SUBTITLE_FONT",
+        "WHISPER_MODEL"
+      ],
+      "build_time_vars": [],
+      "late_bound_url_keys": []
+    }
+  ],
+  "dependencies": [],
+  "env": {
+    "user_env_keys": [],
+    "user_build_env_keys": [],
+    "values_redacted": true
+  },
+  "env_contract": {
+    "koubo-shorts": []
+  },
+  "ports": {
+    "koubo-shorts": 8000
+  },
+  "evidence": [
+    {
+      "service": "koubo-shorts",
+      "decision": "source_root",
+      "value": ".",
+      "evidence": "Using repository root."
+    },
+    {
+      "service": "koubo-shorts",
+      "decision": "deploy_mode",
+      "value": "existing_dockerfile",
+      "evidence": "Source-root Dockerfile exists."
+    },
+    {
+      "service": "koubo-shorts",
+      "decision": "port",
+      "value": 8000,
+      "evidence": "Dockerfile EXPOSE 8000; selected 8000 as HTTP listener"
+    }
+  ],
+  "platform_fit": {
+    "one_http_port": true,
+    "requires_persistent_filesystem": true,
+    "requires_object_storage": false,
+    "unsupported_protocols": []
+  },
+  "archive_manifest": {
+    "excluded_patterns": [
+      ".git/*",
+      "node_modules/*",
+      "dist/*",
+      "target/*",
+      "platform/*",
+      "coverage/*",
+      ".next/*",
+      ".turbo/*",
+      ".cache/*",
+      ".parcel-cache/*",
+      ".venv/*",
+      "__pycache__/*",
+      "*.pyc",
+      ".opendeploy/*",
+      ".env",
+      ".env.*",
+      ".pypirc",
+      ".netrc",
+      "*.pem",
+      "*.key",
+      "id_rsa",
+      "id_rsa.pub",
+      "id_ed25519",
+      "id_ed25519.pub",
+      "credentials.json",
+      "service-account*.json",
+      "*kubeconfig*",
+      "build/*"
+    ],
+    "included_overrides": [],
+    "required_files": [],
+    "excluded_required_files": [],
+    "secret_like_entries": [],
+    "git_metadata": {
+      "required": false,
+      "bind_mount": false,
+      "references": [],
+      "git_path_type": "directory",
+      "archive_excludes_git": true,
+      "suggested_build_vars": [
+        "GIT_COMMIT",
+        "APP_VERSION",
+        "SOURCE_VERSION"
+      ]
+    },
+    "warnings": []
+  },
+  "mutations": [
+    "create_project",
+    "create_service:koubo-shorts",
+    "upload_source",
+    "create_deployment",
+    "resolve_domain"
+  ],
+  "consents": [],
+  "blocking_issues": [],
+  "warnings": [
+    {
+      "code": "storage_decision_required",
+      "service": "koubo-shorts",
+      "paths": [
+        "/data"
+      ],
+      "message": "This app writes runtime files. Configure object-storage/media env when the app supports it, or continue with local file paths and a clear persistence note."
+    }
+  ],
+  "review": null,
+  "fallback_commands": [
+    "opendeploy regions list --json",
+    "opendeploy projects create --name <name> --repo file://upload --skip-validation true --json",
+    "opendeploy dependencies create --body .opendeploy/dependency-<dependency>.json --json",
+    "opendeploy dependencies status <project-id> --json",
+    "opendeploy services create <project-id> --body service.json --json",
+    "opendeploy upload update-source <project-id> <source-path> --project-name <name> --region-id <region-id> --json",
+    "opendeploy deployments create --project <project-id> --service <service-id> --json"
+  ]
+}
