@@ -21,6 +21,15 @@
     width: 100%; max-width: 560px; background: var(--card);
     border: 1px solid var(--line); border-radius: 16px; padding: 24px; margin-bottom: 16px;
   }
+  .titlebox { margin-bottom: 16px; }
+  .titlebox label { display: block; font-size: 13px; color: var(--fg); margin-bottom: 7px; }
+  .titlebox .opt { color: var(--muted); font-weight: 400; }
+  .titlebox input {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 15px;
+    padding: 11px 13px; border-radius: 10px; border: 1px solid var(--line);
+    background: #10131a; color: var(--fg);
+  }
+  .titlebox input:focus { outline: none; border-color: var(--accent); }
   .drop {
     border: 2px dashed var(--line); border-radius: 14px; padding: 44px 20px;
     text-align: center; cursor: pointer; transition: .15s; color: var(--muted);
@@ -54,6 +63,10 @@
   <div class="sub">拖一条口播原片进来，自动去空档、加字幕、变竖屏成片</div>
 
   <div class="card">
+    <div class="titlebox">
+      <label for="titleInput">顶部标题 <span class="opt">选填,留空则不加</span></label>
+      <input id="titleInput" type="text" maxlength="40" placeholder="例如:跟美国政府打交道有多离谱">
+    </div>
     <div id="drop" class="drop">
       <div class="big">⬆️</div>
       <div><b>点这里选视频</b> 或直接把文件拖进来</div>
@@ -167,6 +180,7 @@ async function upload(file) {
     fd2.append('upload_id', uploadId);
     fd2.append('filename', file.name);
     fd2.append('total', total);
+    fd2.append('title', (document.getElementById('titleInput').value || '').trim());
     const data = await sendChunk(fd2, '/api/upload/complete');
     jStage.textContent = data.position > 0 ? `排队中，前面还有 ${data.position} 个` : '开始处理…';
     setBar(3);

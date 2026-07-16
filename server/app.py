@@ -69,7 +69,7 @@ def _set(job_id, **kw):
             JOBS[job_id].update(kw)
 
 
-def _create_job(src_path, filename):
+def _create_job(src_path, filename, title=""):
     """把一个已落盘的视频文件登记成任务并入队，返回 job_id。"""
     global _SUBMIT_SEQ
     job_id = Path(src_path).stem
@@ -80,6 +80,7 @@ def _create_job(src_path, filename):
             "stage": "排队中",
             "pct": 0,
             "filename": filename,
+            "title": (title or "").strip()[:40],  # 顶部标题，限长
             "src_path": str(src_path),
             "out_path": None,
             "out_name": None,
@@ -124,7 +125,9 @@ def worker_loop():
             def progress(stage, pct):
                 _set(job_id, stage=stage, pct=pct)
 
-            out_path = process_video(src, OUTPUT_DIR, WORK_DIR, progress=progress)
+            out_path = process_video(src, OUTPUT_DIR, WORK_DIR,
+                                     config={"title": job.get("title", "")},
+                                     progress=progress)
             _set(job_id, status="done", stage="完成", pct=100,
                  out_path=str(out_path), out_name=out_path.name)
         except Exception as e:  # 处理失败不影响后续任务
@@ -181,7 +184,7 @@ def health():
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), title: str = Form("")):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in VIDEO_EXTS:
         raise HTTPException(400, f"不支持的文件类型：{ext or '未知'}。请上传视频文件。")
@@ -211,7 +214,7 @@ async def upload(file: UploadFile = File(...)):
         dst.unlink(missing_ok=True)
         raise HTTPException(400, "空文件。")
 
-    _create_job(dst, file.filename)
+    _create_job(dst, file.filename, title)
     return {"job_id": job_id, "position": _queue_position(job_id)}
 
 
@@ -249,6 +252,7 @@ async def upload_complete(
     upload_id: str = Form(...),
     filename: str = Form(...),
     total: int = Form(...),
+    title: str = Form(""),
 ):
     """所有分片传完后调用：按序拼成完整文件、校验大小、登记任务。"""
     if not _ID_RE.match(upload_id):
@@ -279,7 +283,7 @@ async def upload_complete(
                 shutil.copyfileobj(pf, out, 1024 * 1024)
     shutil.rmtree(d, ignore_errors=True)
 
-    _create_job(dst, filename)
+    _create_job(dst, filename, title)
     return {"job_id": job_id, "position": _queue_position(job_id)}
 
 

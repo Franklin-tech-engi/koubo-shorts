@@ -57,18 +57,34 @@ DEFAULT_CONFIG = {
     "pause_head": 0.25,   # 每段说话前保留秒数
     "pause_tail": 0.35,   # 每段说话后保留秒数
 
-    # === 轻美颜 ===
+    # === 美颜（加强版：磨皮更明显、提亮提饱和，仍自然）===
     "beauty": True,
-    "beauty_filter": "bilateral=sigmaS=3:sigmaR=0.08,eq=brightness=0.02:saturation=1.05",
+    "beauty_filter": os.environ.get(
+        "BEAUTY_FILTER",
+        "bilateral=sigmaS=6:sigmaR=0.14,eq=brightness=0.04:saturation=1.10:contrast=1.03",
+    ),
 
     # 输出分辨率（竖屏 9:16）
     "width": 1080,
     "height": 1920,
 
+    # === 顶部标题（上传时填；空则不加）===
+    "title": "",
+    "title_font_size": int(os.environ.get("TITLE_FONT_SIZE", "62")),
+    "title_font_file": os.environ.get("TITLE_FONT_FILE", ""),  # 空则自动探测 CJK 字体
+    "title_max_chars": 13,   # 每行标题最多字数，超了自动换行
+    "title_y": int(os.environ.get("TITLE_Y", "170")),  # 标题距顶部像素
+
     # 字幕样式（白字 + 黑描边，底部居中）
     "font_name": os.environ.get("SUBTITLE_FONT", "PingFang SC"),
     "font_size": 15,
     "subtitle_margin_v": 45,
+
+    # === 字幕关键词标黄（用 LLM 挑词，整句白字、关键词黄色）===
+    "highlight_keywords": os.environ.get("HIGHLIGHT_KEYWORDS", "1") == "1",
+    "llm_api_base": os.environ.get("TRANSCRIBE_API_BASE", ""),   # 复用 gptnb
+    "llm_api_key": os.environ.get("TRANSCRIBE_API_KEY", ""),
+    "llm_model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
 
     # 每行字幕最多多少字（12 字在 1080 宽下不会贴边）
     "max_chars_per_line": 12,
@@ -307,6 +323,126 @@ def write_srt(lines, path):
             f.write(f"{i}\n{secs_to_srt_time(start)} --> {secs_to_srt_time(end)}\n{text}\n\n")
 
 
+# 常见 CJK 字体路径（drawtext 需要真实字体文件路径，字幕的 subtitles/ass 走 fontconfig 不需要）
+_CJK_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+]
+
+
+def _find_cjk_fontfile(cfg):
+    """找一个可用的中文字体文件路径（给标题 drawtext 用）。"""
+    if cfg.get("title_font_file") and os.path.exists(cfg["title_font_file"]):
+        return cfg["title_font_file"]
+    for p in _CJK_FONT_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _wrap_cjk(text, max_chars):
+    """按字数把标题折成多行。"""
+    text = text.strip()
+    lines = [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
+    return lines[:2]  # 标题最多两行
+
+
+def _extract_keywords(lines, cfg):
+    """调 LLM 给每条字幕挑 1-2 个关键词，返回和 lines 等长的关键词列表。失败返回全空。"""
+    if not (cfg.get("highlight_keywords") and cfg.get("llm_api_base") and cfg.get("llm_api_key")):
+        return [[] for _ in lines]
+    if not lines:
+        return []
+    import json as _json
+    import requests
+    texts = [t for _, _, t in lines]
+    prompt = (
+        "下面是一条口播视频的逐句字幕（JSON数组）。给每一句挑出 1-2 个最重要、最该被强调的"
+        "关键词（必须是句子里原样出现的连续片段，通常是名词/动词/数字/专有名词，别挑虚词）。"
+        "严格只返回一个 JSON 数组，长度和输入相同，每一项是该句关键词组成的数组（没有合适的就空数组）。"
+        "不要任何解释、不要代码块标记。\n输入：" + _json.dumps(texts, ensure_ascii=False)
+    )
+    try:
+        base = cfg["llm_api_base"].rstrip("/")
+        r = requests.post(
+            f"{base}/chat/completions",
+            headers={"Authorization": "Bearer " + cfg["llm_api_key"],
+                     "Content-Type": "application/json"},
+            json={"model": cfg["llm_model"], "temperature": 0,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=60,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"].strip()
+        content = content.replace("```json", "").replace("```", "").strip()
+        kws = _json.loads(content)
+        # 对齐长度 + 只保留确实出现在句子里的关键词
+        out = []
+        for i, (_, _, text) in enumerate(lines):
+            row = kws[i] if i < len(kws) and isinstance(kws[i], list) else []
+            out.append([k for k in row if k and k in text][:2])
+        return out
+    except Exception as e:
+        print("  关键词提取失败，退回纯白字幕：", e)
+        return [[] for _ in lines]
+
+
+def secs_to_ass_time(t):
+    if t < 0:
+        t = 0
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
+    return f"{h:d}:{m:02d}:{s:05.2f}"
+
+
+def _ass_highlight(text, keywords, hi_color):
+    """把关键词用黄色 override 包起来（ASS 内联颜色）。"""
+    reset = r"{\c&H00FFFFFF&}"
+    hi = r"{\c" + hi_color + r"&}" if not hi_color.startswith("&H") else r"{\c" + hi_color + r"}"
+    out = text
+    for kw in keywords:
+        if kw and kw in out:
+            out = out.replace(kw, hi + kw + reset, 1)
+    return out
+
+
+def write_ass(lines, keywords, path, cfg):
+    """生成 ASS 字幕：整句白字黑边、关键词黄色。"""
+    W, H = cfg["width"], cfg["height"]
+    fs = int(round(cfg["font_size"] * (H / 288.0)))  # 与旧 SRT 观感对齐
+    mv = int(round(cfg["subtitle_margin_v"] * (H / 288.0)))
+    font = cfg["font_name"]
+    hi_color = "&H0000FFFF"  # 黄（ASS 是 BGR）
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {W}\nPlayResY: {H}\n"
+        "WrapStyle: 2\nScaledBorderAndShadow: yes\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
+        "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Def,{font},{fs},&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,"
+        f"{max(2, fs // 12)},0,2,60,60,{mv},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(header)
+        for i, (start, end, text) in enumerate(lines):
+            if end <= start:
+                end = start + 0.5
+            kws = keywords[i] if i < len(keywords) else []
+            body = _ass_highlight(text, kws, hi_color)
+            f.write(f"Dialogue: 0,{secs_to_ass_time(start)},{secs_to_ass_time(end)},"
+                    f"Def,,0,0,0,,{body}\n")
+
+
 def build_video_filter(cfg):
     """返回 ffmpeg 的画面处理滤镜串（不含字幕，字幕单独拼接）。"""
     W, H = cfg["width"], cfg["height"]
@@ -326,26 +462,50 @@ def build_video_filter(cfg):
     return vf
 
 
-def step_reframe_and_burn(src, srt_name, dst, workdir, cfg):
-    """竖屏化(+轻美颜)并烧字幕。srt_name 为 workdir 下的相对文件名，None 表示无字幕。"""
-    style = (
-        f"FontName={cfg['font_name']},"
-        f"FontSize={cfg['font_size']},"
-        f"PrimaryColour=&H00FFFFFF,"      # 白字
-        f"OutlineColour=&H00000000,"      # 黑描边
-        f"BorderStyle=1,Outline=2,Shadow=0,"
-        f"Alignment=2,MarginV={cfg['subtitle_margin_v']}"
-    )
+def step_reframe_and_burn(src, sub_name, dst, workdir, cfg):
+    """竖屏化(+美颜) + 烧字幕(+顶部标题)。
+    sub_name 为 workdir 下的字幕文件名(.ass 或 .srt)，None 表示无字幕。"""
     base = build_video_filter(cfg)
     prefix = "[0:v]" if cfg["reframe_mode"] == "crop" else ""
-    if srt_name is None:
-        fc = f"{prefix}{base};[vid]null[out]"
-    else:
-        fc = f"{prefix}{base};[vid]subtitles={srt_name}:force_style='{style}'[out]"
+    chain = f"{prefix}{base}"   # 产出 [vid]
+    label = "vid"
+
+    # 1) 烧字幕：.ass 走 ass 滤镜（支持关键词内联黄色），.srt 走 subtitles 滤镜
+    if sub_name:
+        if sub_name.lower().endswith(".ass"):
+            chain += f";[{label}]ass={sub_name}[subbed]"
+        else:
+            style = (f"FontName={cfg['font_name']},FontSize={cfg['font_size']},"
+                     f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                     f"BorderStyle=1,Outline=2,Shadow=0,Alignment=2,"
+                     f"MarginV={cfg['subtitle_margin_v']}")
+            chain += f";[{label}]subtitles={sub_name}:force_style='{style}'[subbed]"
+        label = "subbed"
+
+    # 2) 顶部标题：drawtext（每行独立、居中，写到 workdir 的 txt 里规避转义）
+    title = (cfg.get("title") or "").strip()
+    if title:
+        fontfile = _find_cjk_fontfile(cfg)
+        if fontfile:
+            fs = cfg["title_font_size"]
+            for k, tl in enumerate(_wrap_cjk(title, cfg["title_max_chars"])):
+                (Path(workdir) / f"title_{k}.txt").write_text(tl, encoding="utf-8")
+                y = cfg["title_y"] + k * int(fs * 1.3)
+                dt = (f"drawtext=fontfile='{fontfile}':textfile=title_{k}.txt:"
+                      f"fontsize={fs}:fontcolor=white:"
+                      f"borderw={max(3, fs // 14)}:bordercolor=black@0.9:"
+                      f"shadowx=2:shadowy=2:shadowcolor=black@0.5:"
+                      f"x=(w-text_w)/2:y={y}")
+                chain += f";[{label}]{dt}[t{k}]"
+                label = f"t{k}"
+        else:
+            print("  未找到中文字体文件，跳过标题")
+
+    chain += f";[{label}]null[out]"
 
     cmd = [
         "ffmpeg", "-y", *_thread_args(cfg), "-i", str(Path(src).resolve()),
-        "-filter_complex", fc,
+        "-filter_complex", chain,
         "-map", "[out]", "-map", "0:a?",
         "-c:v", "libx264", "-preset", cfg.get("x264_preset", "medium"), "-crf", "20",
         "-c:a", "aac", "-b:a", "160k",
@@ -404,15 +564,19 @@ def process_video(src_path, out_dir, work_dir, config=None, progress=None):
         shutil.copy(str(src_path), str(trimmed))
         lines = []
 
-    srt_path = job / "sub.srt"
-    write_srt(lines, srt_path)
-    _noop(f"        生成 {len(lines)} 条字幕")
+    # 字幕：默认走 ASS（支持关键词标黄）；关了高亮或没配 LLM 就退回纯白 ASS
+    sub_name = None
+    if lines:
+        keywords = _extract_keywords(lines, cfg)
+        n_hi = sum(len(k) for k in keywords)
+        write_ass(lines, keywords, job / "sub.ass", cfg)
+        sub_name = "sub.ass"
+        _noop(f"        生成 {len(lines)} 条字幕（关键词标黄 {n_hi} 个）")
 
-    _noop("  [3/3] 竖屏化 + 轻美颜 + 烧字幕 ...")
+    _noop("  [3/3] 竖屏化 + 美颜 + 烧字幕" + ("+标题" if (cfg.get('title') or '').strip() else "") + " ...")
     progress("竖屏化+烧字幕", 70)
     out_path = out_dir / f"{name}{cfg['output_suffix']}.mp4"
-    srt_name = "sub.srt" if lines else None
-    step_reframe_and_burn(trimmed, srt_name, out_path, job, cfg)
+    step_reframe_and_burn(trimmed, sub_name, out_path, job, cfg)
 
     progress("完成", 100)
     _noop(f"  ✅ 完成：{out_path}")
