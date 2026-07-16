@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>口播剪辑 · 一键竖屏成片</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #191c23; --line: #2a2f3a;
+    --fg: #eceef2; --muted: #9aa3b2; --accent: #6c8cff; --ok: #38c793; --err: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--fg); min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; padding: 32px 16px;
+  }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; text-align: center; }
+  .card {
+    width: 100%; max-width: 560px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 16px; padding: 24px; margin-bottom: 16px;
+  }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 14px; padding: 44px 20px;
+    text-align: center; cursor: pointer; transition: .15s; color: var(--muted);
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #1e2230; color: var(--fg); }
+  .drop .big { font-size: 40px; margin-bottom: 10px; }
+  .drop .hint { font-size: 13px; margin-top: 8px; color: var(--muted); }
+  .steps { display: flex; gap: 8px; justify-content: center; margin: 22px 0 4px; flex-wrap: wrap; }
+  .steps span { font-size: 12px; color: var(--muted); background: #1e2230; border-radius: 20px; padding: 5px 12px; }
+  .job { display: none; }
+  .job.show { display: block; }
+  .fname { font-size: 14px; font-weight: 600; word-break: break-all; margin-bottom: 4px; }
+  .stage { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  .bar { height: 10px; background: #10131a; border-radius: 8px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #9db4ff); transition: width .4s; }
+  .row { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+  button {
+    font: inherit; border: none; border-radius: 10px; padding: 11px 18px; cursor: pointer;
+    background: var(--accent); color: #fff; font-weight: 600;
+  }
+  button.ghost { background: #262b36; color: var(--fg); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { font-size: 13px; }
+  .msg.ok { color: var(--ok); } .msg.err { color: var(--err); }
+  .foot { color: var(--muted); font-size: 12px; text-align: center; margin-top: 8px; max-width: 560px; }
+  a.dl { text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1>🎬 口播剪辑</h1>
+  <div class="sub">拖一条口播原片进来，自动去空档、加字幕、变竖屏成片</div>
+
+  <div class="card">
+    <div id="drop" class="drop">
+      <div class="big">⬆️</div>
+      <div><b>点这里选视频</b> 或直接把文件拖进来</div>
+      <div class="hint">支持 mp4 / mov / m4v 等 · 单个最大 500MB</div>
+    </div>
+    <input id="file" type="file" accept="video/*" hidden>
+    <div class="steps">
+      <span>① 去掉不说话的空档</span>
+      <span>② 自动生成字幕</span>
+      <span>③ 竖屏 9:16 + 轻美颜</span>
+    </div>
+  </div>
+
+  <div id="job" class="card job">
+    <div class="fname" id="jFname">—</div>
+    <div class="stage" id="jStage">准备中…</div>
+    <div class="bar"><i id="jBar"></i></div>
+    <div class="row">
+      <div class="msg" id="jMsg"></div>
+      <div id="jActions"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    提示：视频处理很耗算力，服务器一次只处理一条，人多时需要排队等一会儿。<br>
+    成片会保留几小时，请及时下载。全程开源、零 API 费用。
+  </div>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const jobCard = document.getElementById('job');
+const jFname = document.getElementById('jFname');
+const jStage = document.getElementById('jStage');
+const jBar = document.getElementById('jBar');
+const jMsg = document.getElementById('jMsg');
+const jActions = document.getElementById('jActions');
+
+let polling = null;
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) upload(fileInput.files[0]); });
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0];
+  if (f) upload(f);
+});
+
+function showJob() { jobCard.classList.add('show'); }
+function setBar(p) { jBar.style.width = (p || 0) + '%'; }
+
+async function upload(file) {
+  if (polling) { clearInterval(polling); polling = null; }
+  showJob();
+  jFname.textContent = file.name;
+  jStage.textContent = '上传中…';
+  jMsg.textContent = ''; jMsg.className = 'msg';
+  jActions.innerHTML = '';
+  setBar(3);
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || '上传失败');
+    jStage.textContent = data.position > 0 ? `排队中，前面还有 ${data.position} 个` : '开始处理…';
+    poll(data.job_id);
+  } catch (e) {
+    jStage.textContent = '出错了';
+    jMsg.textContent = e.message; jMsg.className = 'msg err';
+    setBar(0);
+  }
+}
+
+function poll(jobId) {
+  polling = setInterval(async () => {
+    try {
+      const r = await fetch('/api/status/' + jobId);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || '查询失败');
+
+      if (d.status === 'queued') {
+        jStage.textContent = d.position > 0 ? `排队中，前面还有 ${d.position} 个…` : '马上开始…';
+        setBar(3);
+      } else if (d.status === 'processing') {
+        jStage.textContent = '处理中 · ' + (d.stage || '');
+        setBar(d.pct);
+      } else if (d.status === 'done') {
+        clearInterval(polling); polling = null;
+        jStage.textContent = '✅ 完成！';
+        setBar(100);
+        jMsg.textContent = '成片已就绪'; jMsg.className = 'msg ok';
+        jActions.innerHTML =
+          `<a class="dl" href="/api/download/${jobId}"><button>⬇️ 下载成片</button></a>`;
+      } else if (d.status === 'error') {
+        clearInterval(polling); polling = null;
+        jStage.textContent = '处理失败';
+        jMsg.textContent = d.error || '未知错误'; jMsg.className = 'msg err';
+        setBar(0);
+      }
+    } catch (e) {
+      clearInterval(polling); polling = null;
+      jStage.textContent = '连接中断';
+      jMsg.textContent = e.message; jMsg.className = 'msg err';
+    }
+  }, 2000);
+}
+</script>
+</body>
+</html>

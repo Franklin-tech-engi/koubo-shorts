@@ -11,3 +11,8 @@ output/*
 *.wav
 .DS_Store
 __pycache__/
+
+# Web 版本地开发产物
+.venv/
+.venv_test/
+data/

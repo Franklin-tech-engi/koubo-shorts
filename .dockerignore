@@ -1,0 +1,15 @@
+.git
+.gitignore
+input/*
+output/*
+data/
+.work/
+.work_folders/
+__pycache__/
+*.pyc
+*.mp4
+*.mov
+*.mp3
+*.wav
+.DS_Store
+使用说明.md

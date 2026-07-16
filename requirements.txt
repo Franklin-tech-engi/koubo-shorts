@@ -1,0 +1,6 @@
+# Web 版依赖（本地纯 CLI 用法只需要 faster-whisper + 系统 ffmpeg）
+faster-whisper==1.0.3
+requests>=2.31
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
